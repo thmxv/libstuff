@@ -1,3 +1,24 @@
+//
+// stuff library - A library of small C++ utilities
+// author: Xavier Thomas
+// 
+// You should have received a copy of the MIT License
+// along with this software. If not, see <https://opensource.org/licenses/MIT>.
+//
+// Immutable string Python style
+// Uses small buffer optimisation for string <= 22 chars in length (23 if 
+// including terminating null char), otherwise pretty much just a shared_ptr 
+// with custom allocator support and a join() method.
+//
+// Benefits:
+// - performant short strings (SBO)
+// - 'free' copy similar to COW
+// - safe for concurent use (imutability, shared_ptr)
+// - allocator support
+//
+// Drawbacks/TODOS: 
+// - still does 2 allocations for the shared_ptr until C++20 is really here
+
 #pragma once
 
 //#include <format>
@@ -12,20 +33,6 @@
 #include <utility>
 
 namespace stuff {
-
-// Immutable string Python style
-// Uses small buffer optimisation for string <= 22 chars in length (23 if 
-// including terminating null char), otherwise pretty much just a shared_ptr 
-// with custom allocator support and a join() method.
-//
-// Benefits:
-// - performant short strings (SBO)
-// - 'free' copy similar to COW
-// - safe for concurent use (imutability, shared_ptr)
-// - allocator support
-//
-// Drawbacks:
-// - still does 2 allocations for the shared_ptr until C++20 is really here
 
 namespace detail {
 
