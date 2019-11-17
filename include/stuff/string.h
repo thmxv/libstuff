@@ -11,10 +11,10 @@
 // with custom allocator support and a join() method.
 //
 // Benefits:
-// - performant short strings (SBO)
-// - 'free' copy similar to COW
-// - safe for concurent use (imutability, shared_ptr)
-// - allocator support
+// - Performant short strings (SBO)
+// - Implicit sharing ('free' copy)
+// - Safe for concurent use (imutability, shared_ptr)
+// - Allocator support
 //
 // Drawbacks/TODOS: 
 // - still does 2 allocations for the shared_ptr until C++20 is really here
@@ -36,38 +36,39 @@ namespace stuff {
 
 namespace detail {
 
-static constexpr std::size_t LONG_SIZE_BITS = 8 * sizeof(std::size_t) - 1;
-static constexpr std::size_t LONG_MAX_SIZE = (1ul << LONG_SIZE_BITS) - 1;
-static constexpr std::size_t SHORT_SIZE_BITS = 8 * sizeof(std::uint8_t) - 1;
-static constexpr std::uint8_t SHORT_MAX_SIZE = (1ul << SHORT_SIZE_BITS) - 1;
-
 struct LongStr {
+    static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::size_t) - 1;
+    static constexpr std::size_t MAX_SIZE = (1ul << SIZE_BITS) - 1;
+
     bool is_long_ : 1;
-    std::size_t size_ : LONG_SIZE_BITS;
+    std::size_t size_ : SIZE_BITS;
     std::shared_ptr<char[]> data_;
 
     LongStr(std::size_t size, std::shared_ptr<char[]> sp) noexcept
             :  data_(sp) {
-        assert(size <= LONG_MAX_SIZE);
+        assert(size <= MAX_SIZE);
         is_long_ = true;
-        size_ = (size & LONG_MAX_SIZE);
+        size_ = (size & MAX_SIZE);
     }
 };
 
-static constexpr std::size_t SMALL_BUFFER_SIZE = sizeof(LongStr) - 1;
-static_assert(SMALL_BUFFER_SIZE <= SHORT_MAX_SIZE);
 
 struct ShortStr {
+    static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::uint8_t) - 1;
+    static constexpr std::uint8_t MAX_SIZE = (1ul << SIZE_BITS) - 1;
+    static constexpr std::size_t BUFFER_SIZE = sizeof(LongStr) - 1;
+    static_assert(BUFFER_SIZE <= MAX_SIZE);
+
     bool is_long_ : 1;
-    std::uint8_t size_: SHORT_SIZE_BITS;
-    std::array<char, SMALL_BUFFER_SIZE> data_;
+    std::uint8_t size_: SIZE_BITS;
+    std::array<char, BUFFER_SIZE> data_;
 
     ShortStr() noexcept : ShortStr(0) { data_[0] = '\0';}
 
     ShortStr(std::uint8_t size) noexcept {
-        assert(size <= SHORT_MAX_SIZE);
+        assert(size <= MAX_SIZE);
         is_long_ = false;
-        size_ = (size & SHORT_MAX_SIZE);
+        size_ = (size & MAX_SIZE);
     }
 };
 
@@ -98,13 +99,18 @@ union UnionStr {
     template <typename Allocator>
     UnionStr(Allocator& alloc, std::size_t size) {
         using alloc_traits = std::allocator_traits<Allocator>;
-        if (size >= SMALL_BUFFER_SIZE) {
+        if (size >= ShortStr::BUFFER_SIZE) {
+            typename alloc_traits::pointer p = alloc_traits::allocate(alloc, size+1);
+            for(std::size_t i=0; i<size+1; i++) { 
+                // alloc_traits::construct(&p[i]);  // value init
+                ::new(&p[i]) char; // default init. Note: no ()
+            }
             new(&long_) LongStr(size, 
                 // std::allocate_shared_default_init<char[]>(alloc, size+1)
-                std::shared_ptr<char[]>(
-                    alloc_traits::allocate(alloc, size+1), 
+                std::shared_ptr<char[]>(p, 
                     [=](char* ptr) mutable { 
-                        alloc_traits::deallocate(alloc, ptr, size);},
+                        alloc_traits::deallocate(alloc, ptr, size+1);
+                        },
                     alloc)
                 );
         } else {
@@ -164,7 +170,7 @@ public:
     // Maximum size of a string that still fits the small buffer and 
     // thus for which allocation is optimized away
     static constexpr std::size_t SMALL_STRING_SIZE 
-        = detail::SMALL_BUFFER_SIZE - 1;
+        = detail::ShortStr::BUFFER_SIZE - 1;
     static constexpr std::size_t npos = std::string_view::npos;
 
 private:
@@ -211,8 +217,8 @@ public:
     get_allocator() const noexcept { return allocator_; }
 
     // If you want a copy that out-lives your alloc/memory-resource
-    // Use this to make a newly allcoated copy ujsing a different allocator
-    // Can also use the nond efault copy constructoir that this function uses
+    // Use this to make a newly allocated copy using a different allocator
+    // Can also use the non default copy constructor that this function uses
     [[nodiscard]] String copy(const Allocator& alloc) {
         return String(*this, alloc);
     }
