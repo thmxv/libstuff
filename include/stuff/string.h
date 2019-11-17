@@ -216,13 +216,6 @@ public:
     [[nodiscard]] Allocator 
     get_allocator() const noexcept { return allocator_; }
 
-    // If you want a copy that out-lives your alloc/memory-resource
-    // Use this to make a newly allocated copy using a different allocator
-    // Can also use the non default copy constructor that this function uses
-    [[nodiscard]] String copy(const Allocator& alloc) {
-        return String(*this, alloc);
-    }
-
     // Iterators
 
     [[nodiscard]] const_iterator begin() const noexcept { return cbegin(); }
