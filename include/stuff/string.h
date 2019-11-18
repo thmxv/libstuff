@@ -167,6 +167,11 @@ public:
     using size_type = std::size_t;
     using difference_type = std::ptrdiff_t;
     using allocator_type = Allocator;
+    
+    static_assert(
+        std::is_same_v<value_type, typename allocator_type::value_type>,
+        "Invalid allocator::value_type");
+    
     // Maximum size of a string that still fits the small buffer and 
     // thus for which allocation is optimized away
     static constexpr std::size_t SMALL_STRING_SIZE 
@@ -175,8 +180,6 @@ public:
 
 private:
     using alloc_traits = std::allocator_traits<allocator_type>;
-    static_assert(std::is_same_v<char, typename allocator_type::value_type>,
-        "Invalid allocator::value_type");
 
 public:
     String() noexcept(noexcept(Allocator())) : String(Allocator()) {}
@@ -185,7 +188,7 @@ public:
 
     String(const char* str, const Allocator& alloc = Allocator())
         : allocator_(alloc), str_(allocator_, std::strlen(str)) {
-        std::memcpy(str_.data(), str, str_.length()+1);
+        std::memcpy(str_.data(), str, str_.length() + 1);
     }
 
     String(const char* str, std::size_t count, 
@@ -200,15 +203,21 @@ public:
     // char[] inside the shared_ptr) but share it, it seems logical 
     // to always propagate the allocator.
     String(const String& other) noexcept
-        : allocator_(other.allocator_), str_(other.str_) {}
+            : allocator_(other.allocator_), str_(other.str_) {}
 
+    // Note: we could avoid copy if (alloc == other.allocator_)
     String(const String& other, const Allocator& alloc) noexcept
-        : allocator_(alloc),  str_(other.str_) {}
+        : allocator_(alloc), str_(alloc. other.length()) {
+        std::memcpy(str_.data(), other.data(), other.length() + 1);
+    }
 
     String(String&& other) = default;
 
+    // Note: we could avoid copy if (alloc == other.allocator_)
     String(String&& other, const Allocator& alloc) noexcept
-        : allocator_(alloc), str_(std::move(other.str_)) {}
+        : allocator_(alloc), str_(alloc. other.length()) {
+        std::memcpy(str_.data(), other.data(), other.length() + 1);
+    }
 
     String& operator=(String& other) = delete;
     String& operator=(String&& other) = delete;
