@@ -6,24 +6,30 @@
 // along with this software. If not, see <https://opensource.org/licenses/MIT>.
 //
 // Immutable string Python style
-// Uses small buffer optimisation for string <= 22 chars in length (23 if 
-// including terminating null char), otherwise pretty much just a shared_ptr 
-// with custom allocator support and a join() method.
+// TODO: better description
 //
 // Benefits:
 // - Performant short strings (SBO)
 // - Implicit sharing ('free' copy)
 // - Safe for concurent use (imutability, shared_ptr)
 // - Allocator support
-//
-// Drawbacks/TODOS: 
-// - still does 2 allocations for the shared_ptr until C++20 is really here
+
+// TODO:
+// - make template parameter for value type (char uchar8_t)
+// - make template parameter for short string cut-off value
+// - clang-format
+// - clang-tidy
+// - micro-benches
+// - use case benches
+
 
 #pragma once
 
 //#include <format>
 //#include <compare>
+#include <atomic>
 #include <cassert>
+#include <cstddef>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -36,22 +42,117 @@ namespace stuff {
 
 namespace detail {
 
+struct SharedStr {
+    // Note: Could put allocator in here, maybe size too
+    std::atomic<std::size_t> ref_count_ = 0;
+    char data_[1]; // first member for alignment
+    
+    char* data() { return &data_[0]; }
+};
+
+struct alignas(alignof(SharedStr)) SAlloc {};
+
+template <typename Allocator>
+[[nodiscard]] SharedStr* allocate_shared_str_default_init(
+        Allocator& alloc, std::size_t length) {
+    using alloc_traits = typename std::allocator_traits<Allocator>;
+
+    using Asa = typename alloc_traits::template rebind_alloc<SAlloc>;
+    using Asa_traits = typename alloc_traits::template rebind_traits<SAlloc>;
+    using pointer = typename Asa_traits::pointer; 
+    Asa a2(alloc);
+    // We need length + 1 but SharedStr already comes with one
+    std::size_t n = sizeof(SharedStr) + length;
+    pointer p = Asa_traits::allocate(a2, 
+        (n + sizeof(SAlloc) - 1) / sizeof(SAlloc));
+    assert(reinterpret_cast<std::uintptr_t>(p) % alignof(SharedStr) == 0 &&
+         "allocator does not respect alignment");
+
+    // Init lifetime and set ref_count_ to 0
+    // SharedStr* result = new(p) SharedStr();
+    using Ass = typename alloc_traits::template rebind_alloc<SharedStr>;
+    using Ass_traits = 
+        typename alloc_traits::template rebind_traits<SharedStr>;
+    Ass a3(alloc);
+    SharedStr* result = reinterpret_cast<SharedStr*>(p);
+    Ass_traits::construct(a3, result);
+
+    // Init lifetime for the rest of the elements to avoid 'technical UB' 
+    // but should not generate any code
+    // No way do to default init using allocator(traits) API
+    for(std::size_t i = 1; i < length + 1; i++) { 
+        // alloc_traits::construct(alloc, &result->data()[i]);  // value init
+        ::new(&result->data()[i]) char; // default init. Note: not 'char()'
+    }
+    return result;
+}
+
+template <typename Allocator>
+void deallocate_shared_str(
+        Allocator& alloc, SharedStr* ss, std::size_t length) {
+    using alloc_traits = std::allocator_traits<Allocator>;
+
+    for(std::size_t i = 1; i < length + 1; i++) { 
+        alloc_traits::destroy(alloc , &ss->data()[i]);
+    }
+
+    // ss->~SharedStr();
+    using Ass = typename alloc_traits::template rebind_alloc<SharedStr>;
+    using Ass_traits = 
+        typename alloc_traits::template rebind_traits<SharedStr>;
+    Ass a3(alloc);
+    Ass_traits::destroy(a3, ss);
+    
+    using Asa = typename alloc_traits::template rebind_alloc<SAlloc>;
+    using Asa_traits = typename alloc_traits::template rebind_traits<SAlloc>;
+    Asa a2(alloc);
+    std::size_t n = sizeof(SharedStr) + length;
+    Asa_traits::deallocate(a2, reinterpret_cast<SAlloc*>(ss), 
+        (n + sizeof(SAlloc) - 1) / sizeof(SAlloc));
+}
+
 struct LongStr {
     static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::size_t) - 1;
     static constexpr std::size_t MAX_SIZE = (1ul << SIZE_BITS) - 1;
 
     bool is_long_ : 1;
     std::size_t size_ : SIZE_BITS;
-    std::shared_ptr<char[]> data_;
+    SharedStr* ssp_;
 
-    LongStr(std::size_t size, std::shared_ptr<char[]> sp) noexcept
-            :  data_(sp) {
+    LongStr() = delete;
+
+    template<typename Allocator>
+    LongStr(Allocator& alloc, std::size_t size) {
         assert(size <= MAX_SIZE);
         is_long_ = true;
         size_ = (size & MAX_SIZE);
+        ssp_ = allocate_shared_str_default_init(alloc, size);
+        increment_ref_count();
+    }
+    
+    LongStr(const LongStr& other) noexcept
+        : is_long_(true), size_(other.size_), ssp_(other.ssp_) {
+        increment_ref_count(); 
+    }
+    LongStr(LongStr&& other) noexcept 
+        : is_long_(true), size_(other.size_), ssp_(other.ssp_) {
+        other.ssp_ = nullptr; 
+    }
+
+    // Note: NOT an RAII/safe type. decrement_ref_count() needs to be called
+    // to avoid memory leaks
+    ~LongStr() = default;
+
+    void increment_ref_count() { if (ssp_ != nullptr) ++(ssp_->ref_count_); }
+
+    template<typename Allocator>
+    void decrement_ref_count(Allocator& alloc) {
+        if (ssp_ != nullptr && --(ssp_->ref_count_) == 0) { 
+            deallocate_shared_str(alloc, ssp_, size_);
+            ssp_ = nullptr;
+        }
     }
 };
-
 
 struct ShortStr {
     static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::uint8_t) - 1;
@@ -63,7 +164,7 @@ struct ShortStr {
     std::uint8_t size_: SIZE_BITS;
     std::array<char, BUFFER_SIZE> data_;
 
-    ShortStr() noexcept : ShortStr(0) { data_[0] = '\0';}
+    ShortStr() noexcept : ShortStr(0) { data_[0] = '\0'; }
 
     ShortStr(std::uint8_t size) noexcept {
         assert(size <= MAX_SIZE);
@@ -74,13 +175,18 @@ struct ShortStr {
 
 static_assert(sizeof(ShortStr) == sizeof(LongStr));
 
-union UnionStr {
-    LongStr long_;
-    ShortStr short_;
+template <typename Allocator = std::allocator<char>>
+struct UnionStr {
+    [[no_unique_address]] Allocator allocator_;
+    union {
+        LongStr long_;
+        ShortStr short_;
+    };
 
     UnionStr() noexcept : short_()  {}
+    UnionStr(const Allocator& alloc) noexcept : allocator_(alloc), short_() {}
 
-    UnionStr(const UnionStr& other) noexcept {
+    UnionStr(const UnionStr& other) noexcept : allocator_(other.allocator_) {
         if (other.is_long()) { 
             new(&long_) LongStr(other.long_); 
         } else { 
@@ -88,7 +194,8 @@ union UnionStr {
         }
     }
 
-    UnionStr(UnionStr&& other) noexcept {
+    UnionStr(UnionStr&& other) noexcept 
+        : allocator_(std::move(other.allocator_)) {
         if (other.is_long()) { 
             new(&long_) LongStr(std::move(other.long_)); 
         } else { 
@@ -96,30 +203,17 @@ union UnionStr {
         }
     }
 
-    template <typename Allocator>
-    UnionStr(Allocator& alloc, std::size_t size) {
-        using alloc_traits = std::allocator_traits<Allocator>;
+    UnionStr(const Allocator& alloc, std::size_t size) : allocator_(alloc) {
         if (size >= ShortStr::BUFFER_SIZE) {
-            typename alloc_traits::pointer p = alloc_traits::allocate(alloc, size+1);
-            for(std::size_t i=0; i<size+1; i++) { 
-                // alloc_traits::construct(&p[i]);  // value init
-                ::new(&p[i]) char; // default init. Note: no ()
-            }
-            new(&long_) LongStr(size, 
-                // std::allocate_shared_default_init<char[]>(alloc, size+1)
-                std::shared_ptr<char[]>(p, 
-                    [=](char* ptr) mutable { 
-                        alloc_traits::deallocate(alloc, ptr, size+1);
-                        },
-                    alloc)
-                );
+            new(&long_) LongStr(allocator_, size);
         } else {
-            new (&short_) ShortStr(static_cast<uint8_t>(size));
+            new(&short_) ShortStr(static_cast<uint8_t>(size));
         }
     }
 
     ~UnionStr() {
         if (is_long()) { 
+            long_.decrement_ref_count<Allocator>(allocator_);
             long_.~LongStr(); 
         } else { 
             short_.~ShortStr(); 
@@ -128,6 +222,9 @@ union UnionStr {
 
     UnionStr& operator=(UnionStr& other) = delete;
     UnionStr& operator=(UnionStr&& other) = delete;
+    
+    [[nodiscard]] Allocator 
+    get_allocator() const noexcept { return allocator_; }
 
     [[nodiscard]] bool is_long() const noexcept { return long_.is_long_ ; }
     
@@ -136,17 +233,14 @@ union UnionStr {
     }
     
     [[nodiscard]] char* data() noexcept {
-        return is_long() ? long_.data_.get() : short_.data_.data();
+        return is_long() ? long_.ssp_->data() : short_.data_.data();
     }
 
     [[nodiscard]] const char* data() const noexcept {
-        return is_long() ? long_.data_.get() : short_.data_.data();
+        return is_long() ? long_.ssp_->data() : short_.data_.data();
     }
-};
 
-static_assert(std::is_standard_layout<LongStr>::value);
-static_assert(std::is_standard_layout<ShortStr>::value);
-static_assert(std::is_standard_layout<UnionStr>::value);
+};
 
 } // namespace detail
 
@@ -170,7 +264,11 @@ public:
     
     static_assert(
         std::is_same_v<value_type, typename allocator_type::value_type>,
-        "Invalid allocator::value_type");
+        "Invalid Allocator::value_type");
+
+    static_assert(std::is_standard_layout<detail::LongStr>::value);
+    static_assert(std::is_standard_layout<detail::ShortStr>::value);
+    static_assert(std::is_standard_layout<detail::UnionStr<Allocator>>::value);
     
     // Maximum size of a string that still fits the small buffer and 
     // thus for which allocation is optimized away
@@ -183,17 +281,16 @@ private:
 
 public:
     String() noexcept(noexcept(Allocator())) : String(Allocator()) {}
-    explicit String(const Allocator& alloc) noexcept 
-        : allocator_(alloc), str_() {}
+    explicit String(const Allocator& alloc) noexcept : str_(alloc) {}
 
     String(const char* str, const Allocator& alloc = Allocator())
-        : allocator_(alloc), str_(allocator_, std::strlen(str)) {
+        : str_(alloc, std::strlen(str)) {
         std::memcpy(str_.data(), str, str_.length() + 1);
     }
 
     String(const char* str, std::size_t count, 
             const Allocator& alloc = Allocator())
-        : allocator_(alloc), str_(allocator_, count) {
+        : str_(alloc, count) {
         std::memcpy(str_.data(), str, count);
         str_.data()[count] = '\0';
     }
@@ -202,12 +299,11 @@ public:
     // Since we do not duplicate the allocated container area (the 
     // char[] inside the shared_ptr) but share it, it seems logical 
     // to always propagate the allocator.
-    String(const String& other) noexcept
-            : allocator_(other.allocator_), str_(other.str_) {}
+    String(const String& other) noexcept : str_(other.str_) {}
 
     // Note: we could avoid copy if (alloc == other.allocator_)
     String(const String& other, const Allocator& alloc) noexcept
-        : allocator_(alloc), str_(alloc. other.length()) {
+        : str_(alloc, other.length()) {
         std::memcpy(str_.data(), other.data(), other.length() + 1);
     }
 
@@ -215,7 +311,7 @@ public:
 
     // Note: we could avoid copy if (alloc == other.allocator_)
     String(String&& other, const Allocator& alloc) noexcept
-        : allocator_(alloc), str_(alloc. other.length()) {
+        : str_(alloc, other.length()) {
         std::memcpy(str_.data(), other.data(), other.length() + 1);
     }
 
@@ -223,7 +319,7 @@ public:
     String& operator=(String&& other) = delete;
 
     [[nodiscard]] Allocator 
-    get_allocator() const noexcept { return allocator_; }
+    get_allocator() const noexcept { return str_.get_allocator(); }
 
     // Iterators
 
@@ -430,14 +526,12 @@ public:
 
 private:
     // TODO make const if possible
-    // for str_, join()/replace() make this difficult to do 
-    // for allocator_ it is easy when allocate_shared() becomes available
-    [[no_unique_address]] Allocator allocator_;
-    detail::UnionStr str_;
+    // join()/replace() make this difficult to do 
+    detail::UnionStr<Allocator> str_;
 
     // Alocate if necessary and set size but requires data to be filled later
     String(const std::size_t size, const Allocator& alloc = Allocator())
-        : allocator_(alloc), str_(allocator_, size) {}
+        : str_(alloc, size) {}
 
     void check_bounds(size_t index) const {
         if (index >= this->size()) {

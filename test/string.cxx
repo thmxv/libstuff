@@ -4,18 +4,15 @@
 
 template <typename StringT>
 void test_string_type() {
-    const char* short_str{"Something short"};
+    const char* short_str{"Somethin short"};
     const char* long_str{"Something long. "
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
         "In nec vehicula turpis. Maecenas tristique mi sit amet "
         "orci massa nunc."};
     const size_t len_short_str = std::strlen(short_str);
     const size_t len_long_str = std::strlen(long_str);
-
-    // std::printf("%lu\n", StringT::SMALL_STRING_SIZE);
-    // std::printf("%#lx\n", stuff::detail::LONG_MAX_SIZE);
-
-    assert(sizeof(stuff::detail::UnionStr) == 3*sizeof(std::size_t));
+    
+    assert(len_short_str <= StringT::SMALL_STRING_SIZE);
 
     {   //Constructors
         StringT empty{};
@@ -145,8 +142,8 @@ void test_string_type() {
     {   
         // Python-like Replace
         StringT ss{short_str};
-        assert(ss.replace("thing", "") == "Some short");
-        assert(ss.replace(" ", " not so ") == "Something not so short");
+        assert(ss.replace("thin", "") == "Some short");
+        assert(ss.replace(" ", " not so ") == "Somethin not so short");
         StringT sas{"aaaaaaaaaaaaaaaa"};
         assert(sas.replace("a", "b") == "bbbbbbbbbbbbbbbb");
         
@@ -166,11 +163,11 @@ void test_string_type() {
     {   // Join
         StringT s1(short_str);
         auto s5 = StringT{" "}.join("1", "2", "3", "4", s1);
-        assert(s5 == "1 2 3 4 Something short");
+        assert(s5 == "1 2 3 4 Somethin short");
 
         auto s6 = StringT{" "}.join(
             "1", "2", "3", "4", "something long to trigger alloc", s1);
-        assert(s6 == "1 2 3 4 something long to trigger alloc Something short"); 
+        assert(s6 == "1 2 3 4 something long to trigger alloc Somethin short"); 
     }
 
     {   // Comparisson
