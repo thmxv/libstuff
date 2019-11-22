@@ -142,7 +142,7 @@ struct LongStr {
     // to avoid memory leaks
     ~LongStr() = default;
 
-    void increment_ref_count() {
+    void increment_ref_count() const {
         if (ssp_ != nullptr)
             ++(ssp_->ref_count_);
     }

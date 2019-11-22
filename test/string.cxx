@@ -52,7 +52,6 @@ void test_string_type() {
         StringT empty{};
         assert(empty.empty() == true);
         assert(empty.length() == 0);
-        assert(empty.size() == 0);
 
         StringT ss(short_str);
         assert(ss.empty() == false);
