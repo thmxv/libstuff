@@ -1,20 +1,22 @@
-#include <stuff/string.h>
+#include "stuff/string.h"
+
 #include <cassert>
 #include <cstring>
 
 template <typename StringT>
 void test_string_type() {
     const char* short_str{"Somethin short"};
-    const char* long_str{"Something long. "
+    const char* long_str{
+        "Something long. "
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
         "In nec vehicula turpis. Maecenas tristique mi sit amet "
         "orci massa nunc."};
     const size_t len_short_str = std::strlen(short_str);
     const size_t len_long_str = std::strlen(long_str);
-    
+
     assert(len_short_str <= StringT::SMALL_STRING_SIZE);
 
-    {   //Constructors
+    { // Constructors
         StringT empty{};
         assert(empty == "");
         StringT other_empty("");
@@ -28,7 +30,7 @@ void test_string_type() {
         StringT s2{long_str};
         assert(s2 == long_str);
         assert(s2 == StringT{long_str});
-    
+
         // Copy constr
         StringT s3(s1);
         assert(s1 == s3);
@@ -46,11 +48,11 @@ void test_string_type() {
         assert(s4 == long_str);
     }
 
-    {   // Size
+    { // Size
         StringT empty{};
-        assert(empty.empty() == true );
-        assert(empty.length() == 0 );
-        assert(empty.size() == 0 );
+        assert(empty.empty() == true);
+        assert(empty.length() == 0);
+        assert(empty.size() == 0);
 
         StringT ss(short_str);
         assert(ss.empty() == false);
@@ -63,9 +65,9 @@ void test_string_type() {
         assert(ls.size() == len_long_str);
     }
 
-    {   // Access and iterator
+    { // Access and iterator
         size_t i = 0;
-        for( StringT s{short_str}; auto& c:s) {
+        for (StringT s{short_str}; auto& c : s) {
             assert(c == short_str[i]);
             assert(s[i] == short_str[i]);
             assert(s.at(i) == short_str[i]);
@@ -73,7 +75,7 @@ void test_string_type() {
         }
         assert(i == len_short_str);
         i = 0;
-        for( StringT s{long_str}; const auto c:s) {
+        for (StringT s{long_str}; const auto c : s) {
             assert(c == long_str[i]);
             assert(s[i] == long_str[i]);
             assert(s.at(i) == long_str[i]);
@@ -84,7 +86,7 @@ void test_string_type() {
         // rbegin/rend
         StringT ss(short_str);
         i = len_short_str;
-        for(auto it = ss.rbegin(); it != ss.rend(); ++it) {
+        for (auto it = ss.rbegin(); it != ss.rend(); ++it) {
             i--;
             assert(*it == short_str[i]);
         }
@@ -92,7 +94,7 @@ void test_string_type() {
 
         StringT ls(long_str);
         i = len_long_str;
-        for(auto it = ls.rbegin(); it != ls.rend(); ++it) {
+        for (auto it = ls.rbegin(); it != ls.rend(); ++it) {
             i--;
             assert(*it == long_str[i]);
         }
@@ -104,10 +106,8 @@ void test_string_type() {
         bool cought = false;
         try {
             char c = ss.at(len_short_str);
-            c++;    //ignore unsused variable
-        } catch (const std::out_of_range& e) {
-            cought = true;
-        }
+            c++; // ignore unsused variable
+        } catch (const std::out_of_range& e) { cought = true; }
         assert(cought);
 
         assert(ls[len_long_str] == '\0');
@@ -115,9 +115,7 @@ void test_string_type() {
         try {
             char c = ls.at(len_long_str);
             c++;
-        } catch (const std::out_of_range& e) {
-            cought = true;
-        }
+        } catch (const std::out_of_range& e) { cought = true; }
         assert(cought);
     }
 
@@ -138,57 +136,61 @@ void test_string_type() {
         assert(StringT(long_str).ends_with(".") == true);
         assert(StringT(long_str).ends_with("a") == false);
     }
-    
-    {   
+
+    {
         // Python-like Replace
         StringT ss{short_str};
         assert(ss.replace("thin", "") == "Some short");
         assert(ss.replace(" ", " not so ") == "Somethin not so short");
         StringT sas{"aaaaaaaaaaaaaaaa"};
         assert(sas.replace("a", "b") == "bbbbbbbbbbbbbbbb");
-        
+
         StringT ls{long_str};
-        assert(ls.replace(ls.get_allocator(), "thing", "") == "Some long. "
-            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
-            "In nec vehicula turpis. Maecenas tristique mi sit amet "
-            "orci massa nunc.");
-        assert(ls.replace(" ", " more ", 1) == "Something more long. "
-            "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
-            "In nec vehicula turpis. Maecenas tristique mi sit amet "
-            "orci massa nunc.");
+        assert(
+            ls.replace(ls.get_allocator(), "thing", "")
+            == "Some long. "
+               "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+               "In nec vehicula turpis. Maecenas tristique mi sit amet "
+               "orci massa nunc.");
+        assert(
+            ls.replace(" ", " more ", 1)
+            == "Something more long. "
+               "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+               "In nec vehicula turpis. Maecenas tristique mi sit amet "
+               "orci massa nunc.");
         StringT las{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
         assert(las.replace("a", "b") == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     }
 
-    {   // Join
+    { // Join
         StringT s1(short_str);
         auto s5 = StringT{" "}.join("1", "2", "3", "4", s1);
         assert(s5 == "1 2 3 4 Somethin short");
 
         auto s6 = StringT{" "}.join(
             "1", "2", "3", "4", "something long to trigger alloc", s1);
-        assert(s6 == "1 2 3 4 something long to trigger alloc Somethin short"); 
+        assert(s6 == "1 2 3 4 something long to trigger alloc Somethin short");
     }
 
-    {   // Comparisson
+    { // Comparisson
         StringT a{"Test String A"};
         StringT a2{"Test String A"};
         StringT b{"Test String B"};
-    
+
         assert(a == a2);
         assert(a != b);
         assert(a <= a2);
         assert(a >= a2);
         assert(a < b);
         assert(b > a);
-    
+
         assert(a == "Test String A");
         assert(a != "Test String B");
         assert(a <= "Test String A");
         assert(a >= "Test String A");
         assert(a < "Test String B");
         assert(a > "Test String");
-    
+
         assert("Test String A" == a);
         assert("Test String B" != a);
         assert("Test String A" >= a);
