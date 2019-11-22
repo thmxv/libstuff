@@ -28,3 +28,15 @@ endfunction()
 
 libstuff_test(string)
 
+# cppcheck
+find_program(CMAKE_CXX_CPPCHECK NAMES cppcheck)
+if (CMAKE_CXX_CPPCHECK)
+    list(
+        APPEND CMAKE_CXX_CPPCHECK 
+            "--enable=all"
+            "--inconclusive"
+            "--force" 
+            "--inline-suppr"
+            "--suppressions-list=${CMAKE_SOURCE_DIR}/cppcheck_suppressions.txt"
+    )
+endif()

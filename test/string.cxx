@@ -67,24 +67,25 @@ void test_string_type() {
 
     { // Access and iterator
         size_t i = 0;
-        for (StringT s{short_str}; auto& c : s) {
+        StringT ss{short_str};
+        for (auto& c : ss) {
             assert(c == short_str[i]);
-            assert(s[i] == short_str[i]);
-            assert(s.at(i) == short_str[i]);
+            assert(ss[i] == short_str[i]);
+            assert(ss.at(i) == short_str[i]);
             i++;
         }
         assert(i == len_short_str);
         i = 0;
-        for (StringT s{long_str}; const auto c : s) {
+        StringT ls{long_str};
+        for (const auto c : ls) {
             assert(c == long_str[i]);
-            assert(s[i] == long_str[i]);
-            assert(s.at(i) == long_str[i]);
+            assert(ls[i] == long_str[i]);
+            assert(ls.at(i) == long_str[i]);
             i++;
         }
         assert(i == len_long_str);
 
         // rbegin/rend
-        StringT ss(short_str);
         i = len_short_str;
         for (auto it = ss.rbegin(); it != ss.rend(); ++it) {
             i--;
@@ -92,7 +93,6 @@ void test_string_type() {
         }
         assert(i == 0);
 
-        StringT ls(long_str);
         i = len_long_str;
         for (auto it = ls.rbegin(); it != ls.rend(); ++it) {
             i--;
@@ -184,17 +184,15 @@ void test_string_type() {
         assert(a < b);
         assert(b > a);
 
-        assert(a == "Test String A");
         assert(a != "Test String B");
-        assert(a <= "Test String A");
-        assert(a >= "Test String A");
+        assert(a <= "Test String B");
+        assert(a >= "Test String");
         assert(a < "Test String B");
         assert(a > "Test String");
 
-        assert("Test String A" == a);
         assert("Test String B" != a);
-        assert("Test String A" >= a);
-        assert("Test String A" <= a);
+        assert("Test String B" >= a);
+        assert("Test String" <= a);
         assert("Test String B" > a);
         assert("Test String" < a);
     }

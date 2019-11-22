@@ -168,7 +168,7 @@ struct ShortStr {
 
     ShortStr() noexcept : ShortStr(0) { data_[0] = '\0'; }
 
-    ShortStr(std::uint8_t size) noexcept {
+    explicit ShortStr(std::uint8_t size) noexcept {
         assert(size <= MAX_SIZE);
         is_long_ = false;
         size_ = (size & MAX_SIZE);
@@ -186,7 +186,8 @@ struct UnionStr {
     };
 
     UnionStr() noexcept : short_() {}
-    UnionStr(const Allocator& alloc) noexcept : allocator_(alloc), short_() {}
+    explicit UnionStr(const Allocator& alloc) noexcept
+        : allocator_(alloc), short_() {}
 
     UnionStr(const UnionStr& other) noexcept : allocator_(other.allocator_) {
         if (other.is_long()) {
@@ -284,12 +285,12 @@ public:
     String() noexcept(noexcept(Allocator())) : String(Allocator()) {}
     explicit String(const Allocator& alloc) noexcept : str_(alloc) {}
 
-    String(const char* str, const Allocator& alloc = Allocator())
+    explicit String(const char* str, const Allocator& alloc = Allocator())
         : str_(alloc, std::strlen(str)) {
         std::memcpy(str_.data(), str, str_.length() + 1);
     }
 
-    String(
+    explicit String(
         const char* str, std::size_t count,
         const Allocator& alloc = Allocator())
         : str_(alloc, count) {
@@ -492,9 +493,8 @@ public:
         char* it_out = out.str_.data();
         c = 0;
         pos = 0;
-        std::size_t found_pos = 0;
         while (c < count) {
-            found_pos = find(old, pos);
+            std::size_t found_pos = find(old, pos);
             if (found_pos == npos) {
                 break;
             }
@@ -537,7 +537,8 @@ private:
     detail::UnionStr<Allocator> str_;
 
     // Alocate if necessary and set size but requires data to be filled later
-    String(const std::size_t size, const Allocator& alloc = Allocator())
+    explicit String(
+        const std::size_t size, const Allocator& alloc = Allocator())
         : str_(alloc, size) {}
 
     void check_bounds(size_t index) const {
@@ -554,7 +555,8 @@ private:
                 "String::check_bounds: "
                 "index (which is %lu) "
                 ">= this->size() (which is %lu)",
-                index, this->size());
+                static_cast<unsigned long>(index),
+                static_cast<unsigned long>(this->size()));
             throw std::out_of_range(what.data());
         }
     }
