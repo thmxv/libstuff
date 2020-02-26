@@ -5,22 +5,22 @@
 // You should have received a copy of the MIT License
 // along with this software. If not, see <https://opensource.org/licenses/MIT>.
 //
-// Immutable string Python style
-// TODO: better description
+// Immutable strings Python style
 //
 // Benefits:
 // - Performant short strings (SBO)
 // - Implicit sharing ('free' copy)
-// - Safe for concurent use (imutability, shared_ptr)
+// - Safe for concurent use
 // - Allocator support
 
 // TODO:
-// - make template parameter for value type (char uchar8_t)
+// - make template parameter for value type (char, uchar8_t)
 // - make template parameter for short string cut-off value
-// - clang-format
-// - clang-tidy
-// - micro-benches
-// - use case benches
+// - use char trait
+// - C++11 compatibility
+// - micro-benchmarks
+// - use-case benchmarks
+// - help gdb know about the strings (see reddit thread)
 
 #pragma once
 
@@ -42,72 +42,102 @@ namespace stuff {
 namespace detail {
 
 struct SharedStr {
-    // Note: Could put allocator in here, maybe size too
-    std::atomic<std::size_t> ref_count_ = 0;
-    char data_[1]; // first member for alignment
-
-    char* data() { return &data_[0]; }
+    // Note: Could put allocator in here
+    std::atomic<std::size_t> ref_count = 0;
+    char data[1]; // first string element for alignment
 };
 
-struct alignas(alignof(SharedStr)) SAlloc {};
+// Empty type with same alignement requirement as SharedString
+// Used to rebind allocators
+struct alignas(alignof(SharedStr)) AlignedEmpty {};
 
+// Count value to pass to allocate for a given buffer length in bytes
+template <typename T>
+constexpr std::size_t 
+alloc_count(std::size_t size) { 
+    // Integer division rounding up
+    return (size + sizeof(T) - 1) / sizeof(T);
+}
+
+// Size of allocated buffer in bytes for a given string length
+constexpr std::size_t 
+alloc_size(std::size_t string_length) {
+    // We need length + 1 but SharedStr already comes with space for one elem
+    return sizeof(SharedStr) + (string_length * sizeof(char));
+}
+
+// Allocate and construct a char buffer and a reference count in one allocation
 template <typename Allocator>
 [[nodiscard]] SharedStr*
 allocate_shared_str_default_init(Allocator& alloc, std::size_t length) {
     using alloc_traits = typename std::allocator_traits<Allocator>;
 
-    using Asa = typename alloc_traits::template rebind_alloc<SAlloc>;
-    using Asa_traits = typename alloc_traits::template rebind_traits<SAlloc>;
-    using pointer = typename Asa_traits::pointer;
-    Asa a2(alloc);
-    // We need length + 1 but SharedStr already comes with one
-    std::size_t n = sizeof(SharedStr) + length;
-    pointer p =
-        Asa_traits::allocate(a2, (n + sizeof(SAlloc) - 1) / sizeof(SAlloc));
+    // Rebind to empty type with same alignment requirements and allocate once
+    using AEmpty = typename alloc_traits::template rebind_alloc<AlignedEmpty>;
+    using AEmpty_traits = 
+        typename alloc_traits::template rebind_traits<AlignedEmpty>;
+    using pointer = typename AEmpty_traits::pointer;
+    AEmpty alloc_empty(alloc);
+    pointer p = AEmpty_traits::allocate(
+        alloc_empty, alloc_count<AlignedEmpty>(alloc_size(length)));
+
+    // Check user provided allocator did respect alignment requirements
     assert(
         reinterpret_cast<std::uintptr_t>(p) % alignof(SharedStr) == 0
         && "allocator does not respect alignment");
 
-    // Init lifetime and set ref_count_ to 0
-    // SharedStr* result = new(p) SharedStr();
-    using Ass = typename alloc_traits::template rebind_alloc<SharedStr>;
-    using Ass_traits = typename alloc_traits::template rebind_traits<SharedStr>;
-    Ass a3(alloc);
+    // Construct SharedString
+    // Equivalent to placement new:
+    //     SharedStr* result = new(p) SharedStr();
+    // but with custom allocator support
+    using ASharedString = 
+         typename alloc_traits::template rebind_alloc<SharedStr>;
+    using ASharedString_traits = 
+        typename alloc_traits::template rebind_traits<SharedStr>;
+    ASharedString alloc_ss(alloc);
     SharedStr* result = reinterpret_cast<SharedStr*>(p);
-    Ass_traits::construct(a3, result);
+    ASharedString_traits::construct(alloc_ss, result);
 
-    // Init lifetime for the rest of the elements to avoid 'technical UB'
-    // but should not generate any code
-    // No way do to default init using allocator(traits) API
+    // Init lifetime of (construct) the rest of the string elements to avoid 
+    // UB but should not generate any code
+    // No way do to default init using Allocator(traits), uses placement new
     for (std::size_t i = 1; i < length + 1; i++) {
         // alloc_traits::construct(alloc, &result->data()[i]);  // value init
-        ::new (&result->data()[i]) char; // default init. Note: not 'char()'
+        ::new (&result->data[i]) char; // default init. Note: not 'char()'
     }
+
     return result;
 }
 
 template <typename Allocator>
 void deallocate_shared_str(
-    Allocator& alloc, SharedStr* ss, std::size_t length) {
+        Allocator& alloc, SharedStr* ss, std::size_t length) {
     using alloc_traits = std::allocator_traits<Allocator>;
 
+    // Note: Should we use alloc_traits::destroy or should we call destructor?
+    // For now we call destructor to stay symetric with allocate_shared_str
     for (std::size_t i = 1; i < length + 1; i++) {
-        alloc_traits::destroy(alloc, &ss->data()[i]);
+        // alloc_traits::destroy(alloc, &ss->data[i]);
+        using Char = char;
+        ss->data[i].~Char();
     }
 
     // ss->~SharedStr();
-    using Ass = typename alloc_traits::template rebind_alloc<SharedStr>;
-    using Ass_traits = typename alloc_traits::template rebind_traits<SharedStr>;
-    Ass a3(alloc);
-    Ass_traits::destroy(a3, ss);
+    using ASharedString = 
+        typename alloc_traits::template rebind_alloc<SharedStr>;
+    using ASharedString_traits = 
+        typename alloc_traits::template rebind_traits<SharedStr>;
+    ASharedString alloc_ss(alloc);
+    ASharedString_traits::destroy(alloc_ss, ss);
 
-    using Asa = typename alloc_traits::template rebind_alloc<SAlloc>;
-    using Asa_traits = typename alloc_traits::template rebind_traits<SAlloc>;
-    Asa a2(alloc);
-    std::size_t n = sizeof(SharedStr) + length;
-    Asa_traits::deallocate(
-        a2, reinterpret_cast<SAlloc*>(ss),
-        (n + sizeof(SAlloc) - 1) / sizeof(SAlloc));
+    using AEmpty = 
+        typename alloc_traits::template rebind_alloc<AlignedEmpty>;
+    using AEmpty_traits = 
+        typename alloc_traits::template rebind_traits<AlignedEmpty>;
+    AEmpty alloc_empty(alloc);
+    AEmpty_traits::deallocate(
+        alloc_empty, reinterpret_cast<AlignedEmpty*>(ss),
+        alloc_count<AlignedEmpty>(alloc_size(length)));
 }
 
 struct LongStr {
@@ -144,12 +174,12 @@ struct LongStr {
 
     void increment_ref_count() const {
         if (ssp_ != nullptr)
-            ++(ssp_->ref_count_);
+            ++(ssp_->ref_count);
     }
 
     template <typename Allocator>
     void decrement_ref_count(Allocator& alloc) {
-        if (ssp_ != nullptr && --(ssp_->ref_count_) == 0) {
+        if (ssp_ != nullptr && --(ssp_->ref_count) == 0) {
             deallocate_shared_str(alloc, ssp_, size_);
             ssp_ = nullptr;
         }
@@ -237,11 +267,11 @@ struct UnionStr {
     }
 
     [[nodiscard]] char* data() noexcept {
-        return is_long() ? long_.ssp_->data() : short_.data_.data();
+        return is_long() ? long_.ssp_->data : short_.data_.data();
     }
 
     [[nodiscard]] const char* data() const noexcept {
-        return is_long() ? long_.ssp_->data() : short_.data_.data();
+        return is_long() ? long_.ssp_->data : short_.data_.data();
     }
 };
 
@@ -278,9 +308,6 @@ public:
         detail::ShortStr::BUFFER_SIZE - 1;
     static constexpr std::size_t npos = std::string_view::npos;
 
-private:
-    using alloc_traits = std::allocator_traits<allocator_type>;
-
 public:
     String() noexcept(noexcept(Allocator())) : String(Allocator()) {}
     explicit String(const Allocator& alloc) noexcept : str_(alloc) {}
@@ -290,9 +317,8 @@ public:
         std::memcpy(str_.data(), str, str_.length() + 1);
     }
 
-    explicit String(
-        const char* str, std::size_t count,
-        const Allocator& alloc = Allocator())
+    String(const char* str, std::size_t count, 
+            const Allocator& alloc = Allocator())
         : str_(alloc, count) {
         std::memcpy(str_.data(), str, count);
         str_.data()[count] = '\0';
