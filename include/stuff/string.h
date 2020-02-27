@@ -45,13 +45,11 @@ namespace detail {
 
 // Empty type with alignement requirement, used to rebind allocators
 template <std::size_t Alignment>
-struct alignas(Alignment) 
-AlignedEmpty {};
+struct alignas(Alignment) AlignedEmpty {};
 
 // Count value to pass to Allocator<T> for a given buffer length in bytes
 template <typename T>
-[[nodiscard]] constexpr std::size_t 
-alloc_count(std::size_t size) noexcept { 
+[[nodiscard]] constexpr std::size_t alloc_count(std::size_t size) noexcept {
     // Integer division, round up
     return (size + sizeof(T) - 1) / sizeof(T);
 }
@@ -63,11 +61,11 @@ allocate_bytes(const Allocator& alloc, std::size_t size) {
     using Empty = AlignedEmpty<Alignment>;
     using AEmpty = typename Alloc_traits::template rebind_alloc<Empty>;
     using AEmpty_traits = typename Alloc_traits::template rebind_traits<Empty>;
-    
+
     AEmpty alloc_empty(alloc);
     std::byte* p = reinterpret_cast<std::byte*>(
         AEmpty_traits::allocate(alloc_empty, alloc_count<Empty>(size)));
-    
+
     // Check user provided allocator did respect alignment requirements
     assert(
         reinterpret_cast<std::uintptr_t>(p) % Alignment == 0
@@ -77,8 +75,8 @@ allocate_bytes(const Allocator& alloc, std::size_t size) {
 }
 
 template <std::size_t Alignment, typename Allocator>
-void
-deallocate_bytes(const Allocator& alloc, std::byte* ptr, std::size_t size) {
+void deallocate_bytes(
+    const Allocator& alloc, std::byte* ptr, std::size_t size) {
     using Alloc_traits = typename std::allocator_traits<Allocator>;
     using Empty = AlignedEmpty<Alignment>;
     using AEmpty = typename Alloc_traits::template rebind_alloc<Empty>;
@@ -104,7 +102,7 @@ struct SharedStr {
 // TODO: move into SharedStr ?
 // Size of allocated buffer in bytes for a given string length
 template <typename Allocator>
-[[nodiscard]] constexpr std::size_t 
+[[nodiscard]] constexpr std::size_t
 alloc_size(std::size_t string_length) noexcept {
     // We need length + 1 but SharedStr already comes with space for one elem
     return sizeof(SharedStr<Allocator>) + (string_length * sizeof(char));
@@ -125,18 +123,18 @@ allocate_shared_str_default_init(const Allocator& alloc, std::size_t length) {
     //     SharedStr* result = new(p) SharedStr();
     // but with custom allocator support
     using ASharedString = typename alloc_traits::template rebind_alloc<SS>;
-    using ASharedString_traits = 
+    using ASharedString_traits =
         typename alloc_traits::template rebind_traits<SS>;
 
     ASharedString alloc_ss(alloc);
     ASharedString_traits::construct(alloc_ss, ssp, alloc);
 
-    // Init lifetime of (construct) the rest of the string elements to avoid 
+    // Init lifetime of (construct) the rest of the string elements to avoid
     // UB but should not generate any code
     // No way do to default init using Allocator(traits), uses placement new
     for (std::size_t i = 1; i < length + 1; i++) {
         // alloc_traits::construct(alloc, &result->data()[i]);  // value init
-        ::new (&ssp->data[i]) char; // default init. Note: not 'char()'
+        ::new (&ssp->data[i]) char; // default init. Note: no () after char
     }
 
     return ssp;
@@ -157,14 +155,13 @@ void deallocate_shared_str(SharedStr<Allocator>* ssp, std::size_t length) {
 
     // ss->~SharedStr();
     using ASharedString = typename alloc_traits::template rebind_alloc<SS>;
-    using ASharedString_traits = 
+    using ASharedString_traits =
         typename alloc_traits::template rebind_traits<SS>;
     ASharedString alloc_ss(ssp->allocator);
     ASharedString_traits::destroy(alloc_ss, ssp);
 
     deallocate_bytes<alignof(SS), Allocator>(
-        ssp->allocator, 
-        reinterpret_cast<std::byte*>(ssp), 
+        ssp->allocator, reinterpret_cast<std::byte*>(ssp),
         alloc_size<Allocator>(length));
 }
 
@@ -179,30 +176,28 @@ struct LongStr {
 
     LongStr() = delete;
 
-    LongStr(const Allocator& alloc, std::size_t size) 
-            : is_long_(true), size_(size & MAX_SIZE) {
+    LongStr(const Allocator& alloc, std::size_t size)
+        : is_long_(true), size_(size & MAX_SIZE) {
         assert(size <= MAX_SIZE);
         ssp_ = allocate_shared_str_default_init(alloc, size);
-        increment_ref_count();
+        assert(ssp_ != nullptr);
+        ++(ssp_->ref_count);
     }
 
     LongStr(const LongStr& other) noexcept
         : is_long_(true), size_(other.size_), ssp_(other.ssp_) {
-        increment_ref_count();
+        // We could allow the copy of 'moved from objects' but we choose 
+        // to not pay the price of a branch here
+        assert(ssp_ != nullptr);
+        ++(ssp_->ref_count);
     }
+
     LongStr(LongStr&& other) noexcept
         : is_long_(true), size_(other.size_), ssp_(other.ssp_) {
         other.ssp_ = nullptr;
     }
 
-    ~LongStr() noexcept { decrement_ref_count(); }
-
-    void increment_ref_count() const {
-        if (ssp_ != nullptr)
-            ++(ssp_->ref_count);
-    }
-
-    void decrement_ref_count() {
+    ~LongStr() noexcept {
         if (ssp_ != nullptr && --(ssp_->ref_count) == 0) {
             deallocate_shared_str(ssp_, size_);
             ssp_ = nullptr;
@@ -212,11 +207,11 @@ struct LongStr {
 
 template <typename Allocator>
 struct ShortStr {
-    static constexpr std::size_t ALLOCATOR_SIZE = 
+    static constexpr std::size_t ALLOCATOR_SIZE =
         std::is_empty_v<Allocator> ? 0 : sizeof(Allocator);
     static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::uint8_t) - 1;
     static constexpr std::uint8_t MAX_SIZE = (1ul << SIZE_BITS) - 1;
-    static constexpr std::size_t BUFFER_SIZE = 
+    static constexpr std::size_t BUFFER_SIZE =
         sizeof(LongStr<Allocator>) - 1 - ALLOCATOR_SIZE;
     static_assert(BUFFER_SIZE <= MAX_SIZE);
 
@@ -227,8 +222,8 @@ struct ShortStr {
 
     ShortStr() = delete;
 
-    explicit ShortStr(const Allocator &alloc, std::uint8_t size=0) noexcept 
-            : is_long_(false), size_(size & MAX_SIZE), allocator_(alloc) {
+    explicit ShortStr(const Allocator& alloc, std::uint8_t size = 0) noexcept
+        : is_long_(false), size_(size & MAX_SIZE), allocator_(alloc) {
         assert(size < BUFFER_SIZE);
     }
 };
@@ -244,8 +239,7 @@ struct UnionStr {
 
     UnionStr() = delete;
 
-    explicit UnionStr(const Allocator& alloc) noexcept
-        : short_(alloc) {}
+    explicit UnionStr(const Allocator& alloc) noexcept : short_(alloc) {}
 
     UnionStr(const UnionStr& other) noexcept {
         if (other.is_long()) {
@@ -267,7 +261,8 @@ struct UnionStr {
         if (size >= ShortStr<Allocator>::BUFFER_SIZE) {
             new (&long_) LongStr<Allocator>(alloc, size);
         } else {
-            new (&short_) ShortStr<Allocator>(alloc, static_cast<uint8_t>(size));
+            new (&short_)
+                ShortStr<Allocator>(alloc, static_cast<uint8_t>(size));
         }
     }
 
@@ -295,7 +290,7 @@ struct UnionStr {
     [[nodiscard]] const char* data() const noexcept {
         return is_long() ? long_.ssp_->data : short_.data_.data();
     }
-    
+
     [[nodiscard]] Allocator get_allocator() const noexcept {
         return is_long() ? long_.ssp_->allocator : short_.allocator_;
     }
@@ -346,8 +341,9 @@ public:
         std::memcpy(str_.data(), str, str_.length() + 1);
     }
 
-    String(const char* str, std::size_t count, 
-            const Allocator& alloc = Allocator())
+    String(
+        const char* str, std::size_t count,
+        const Allocator& alloc = Allocator())
         : str_(alloc, count) {
         std::memcpy(str_.data(), str, count);
         str_.data()[count] = '\0';
@@ -521,8 +517,8 @@ public:
 
     // NOTE: Default constructed alloc, NOT a copy of this->allocator_
     [[nodiscard]] String replace(
-            std::string_view old, std::string_view n,
-            std::size_t count = std::numeric_limits<std::size_t>::max()) const {
+        std::string_view old, std::string_view n,
+        std::size_t count = std::numeric_limits<std::size_t>::max()) const {
         return replace(Allocator(), old, n, count);
     }
 
