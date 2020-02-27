@@ -187,7 +187,7 @@ struct LongStr {
     LongStr(const LongStr& other) noexcept
         : is_long_(true), size_(other.size_), ssp_(other.ssp_) {
         // We could allow the copy of 'moved from objects' but we choose 
-        // to not pay the price of a branch here
+        // to not pay the price of a branch here, for now.
         assert(ssp_ != nullptr);
         ++(ssp_->ref_count);
     }
@@ -268,9 +268,9 @@ struct UnionStr {
 
     ~UnionStr() {
         if (is_long()) {
-            long_.~LongStr<Allocator>();
+            long_.~LongStr();
         } else {
-            short_.~ShortStr<Allocator>();
+            short_.~ShortStr();
         }
     }
 
