@@ -5,7 +5,7 @@
 
 template <typename StringT>
 void test_string_type() {
-    const char* short_str{"Somethin short"};
+    const char* short_str{"Short!"};
     const char* long_str{
         "Something long. "
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
@@ -124,7 +124,7 @@ void test_string_type() {
         assert(StringT(short_str).starts_with("a") == false);
 
         assert(StringT(short_str).ends_with(short_str) == true);
-        assert(StringT(short_str).ends_with("t") == true);
+        assert(StringT(short_str).ends_with("!") == true);
         assert(StringT(short_str).ends_with("a") == false);
 
         assert(StringT(long_str).starts_with(long_str) == true);
@@ -139,8 +139,8 @@ void test_string_type() {
     {
         // Python-like Replace
         StringT ss{short_str};
-        assert(ss.replace("thin", "") == "Some short");
-        assert(ss.replace(" ", " not so ") == "Somethin not so short");
+        assert(ss.replace("hor", "") == "St!");
+        assert(ss.replace("!", ", not so short anymore") == "Short, not so short anymore");
         StringT sas{"aaaaaaaaaaaaaaaa"};
         assert(sas.replace("a", "b") == "bbbbbbbbbbbbbbbb");
 
@@ -164,11 +164,11 @@ void test_string_type() {
     { // Join
         StringT s1(short_str);
         auto s5 = StringT{" "}.join("1", "2", "3", "4", s1);
-        assert(s5 == "1 2 3 4 Somethin short");
+        assert(s5 == "1 2 3 4 Short!");
 
         auto s6 = StringT{" "}.join(
             "1", "2", "3", "4", "something long to trigger alloc", s1);
-        assert(s6 == "1 2 3 4 something long to trigger alloc Somethin short");
+        assert(s6 == "1 2 3 4 something long to trigger alloc Short!");
     }
 
     { // Comparisson
