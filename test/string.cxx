@@ -18,10 +18,13 @@ void test_string_type() {
 
     { // Constructors
         StringT empty{};
-        assert(empty == "");
+        assert(empty.empty());
+        assert(empty.is_empty());
+        assert(empty == "");    // NOLINT(readability-container-size-empty)
+
         StringT other_empty("");
         assert(empty == other_empty);
-        assert(other_empty == "");
+        assert(other_empty == "");  // NOLINT(readability-container-size-empty)
 
         //  char* constr
         StringT s1{short_str};
@@ -199,7 +202,7 @@ void test_string_type() {
 
 int main() {
     test_string_type<stuff::String<>>();
-    test_string_type<stuff::pmr::String>();
+    test_string_type<stuff::pmr::String<>>();
     std::puts("All tests passed successuly");
     return 0;
 }

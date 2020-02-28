@@ -14,7 +14,6 @@
 // - Allocator support
 
 // TODO:
-// - make template parameter for value type (char, uchar8_t)
 // - make template parameter for short string cut-off value
 // - use char trait
 // - C++11 compatibility
@@ -35,6 +34,7 @@
 #include <memory>
 #include <memory_resource>
 #include <ostream>
+#include <string>
 #include <utility>
 
 namespace stuff {
@@ -89,34 +89,33 @@ void deallocate_bytes(
 
 // END of generic memmory stuff
 
-template <typename Allocator>
+template <typename CharT, typename Allocator>
 struct SharedStr {
     std::atomic<std::size_t> ref_count = 0;
     [[no_unique_address]] Allocator allocator;
-    char data[1]; // first string element for alignment
+    CharT data[1]; // first string element for alignment
 
     SharedStr() = delete;
     explicit SharedStr(const Allocator& alloc) noexcept : allocator(alloc) {}
+
+    // Size of allocated buffer in bytes for a given string length
+    [[nodiscard]] static constexpr std::size_t
+    alloc_size(std::size_t string_length) noexcept {
+        // We need length + 1 but SharedStr already comes with space for
+        // one elem
+        return sizeof(SharedStr) + (string_length * sizeof(CharT));
+    }
 };
 
-// TODO: move into SharedStr ?
-// Size of allocated buffer in bytes for a given string length
-template <typename Allocator>
-[[nodiscard]] constexpr std::size_t
-alloc_size(std::size_t string_length) noexcept {
-    // We need length + 1 but SharedStr already comes with space for one elem
-    return sizeof(SharedStr<Allocator>) + (string_length * sizeof(char));
-}
-
 // Allocate and construct a char buffer and a reference count in one allocation
-template <typename Allocator>
-[[nodiscard]] SharedStr<Allocator>*
+template <typename CharT, typename Allocator>
+[[nodiscard]] SharedStr<CharT, Allocator>*
 allocate_shared_str_default_init(const Allocator& alloc, std::size_t length) {
     using alloc_traits = typename std::allocator_traits<Allocator>;
-    using SS = SharedStr<Allocator>;
+    using SS = SharedStr<CharT, Allocator>;
 
     SS* ssp = reinterpret_cast<SS*>(
-        allocate_bytes<alignof(SS)>(alloc, alloc_size<Allocator>(length)));
+        allocate_bytes<alignof(SS)>(alloc, SS::alloc_size(length)));
 
     // Construct SharedString
     // Equivalent to placement new:
@@ -134,23 +133,23 @@ allocate_shared_str_default_init(const Allocator& alloc, std::size_t length) {
     // No way do to default init using Allocator(traits), uses placement new
     for (std::size_t i = 1; i < length + 1; i++) {
         // alloc_traits::construct(alloc, &result->data()[i]);  // value init
-        ::new (&ssp->data[i]) char; // default init. Note: no () after char
+        ::new (&ssp->data[i]) CharT; // default init. Note: no () after type
     }
 
     return ssp;
 }
 
-template <typename Allocator>
-void deallocate_shared_str(SharedStr<Allocator>* ssp, std::size_t length) {
+template <typename CharT, typename Allocator>
+void deallocate_shared_str(
+    SharedStr<CharT, Allocator>* ssp, std::size_t length) {
     using alloc_traits = std::allocator_traits<Allocator>;
-    using SS = SharedStr<Allocator>;
+    using SS = SharedStr<CharT, Allocator>;
 
     // Note: Should we use alloc_traits::destroy or should we call destructor?
     // For now we call destructor to stay symetric with allocate_shared_str
     for (std::size_t i = 1; i < length + 1; i++) {
         // alloc_traits::destroy(alloc, &ss->data[i]);
-        using Char = char;
-        ssp->data[i].~Char();
+        ssp->data[i].~CharT();
     }
 
     // ss->~SharedStr();
@@ -162,31 +161,31 @@ void deallocate_shared_str(SharedStr<Allocator>* ssp, std::size_t length) {
 
     deallocate_bytes<alignof(SS), Allocator>(
         ssp->allocator, reinterpret_cast<std::byte*>(ssp),
-        alloc_size<Allocator>(length));
+        SS::alloc_size(length));
 }
 
-template <typename Allocator>
+template <typename CharT, typename Allocator>
 struct LongStr {
     static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::size_t) - 1;
     static constexpr std::size_t MAX_SIZE = (1ul << SIZE_BITS) - 1;
 
     bool is_long_ : 1;
     std::size_t size_ : SIZE_BITS;
-    SharedStr<Allocator>* ssp_;
+    SharedStr<CharT, Allocator>* ssp_;
 
     LongStr() = delete;
 
     LongStr(const Allocator& alloc, std::size_t size)
         : is_long_(true), size_(size & MAX_SIZE) {
         assert(size <= MAX_SIZE);
-        ssp_ = allocate_shared_str_default_init(alloc, size);
+        ssp_ = allocate_shared_str_default_init<CharT>(alloc, size);
         assert(ssp_ != nullptr);
         ++(ssp_->ref_count);
     }
 
     LongStr(const LongStr& other) noexcept
         : is_long_(true), size_(other.size_), ssp_(other.ssp_) {
-        // We could allow the copy of 'moved from objects' but we choose 
+        // We could allow the copy of 'moved from objects' but we choose
         // to not pay the price of a branch here, for now.
         assert(ssp_ != nullptr);
         ++(ssp_->ref_count);
@@ -199,25 +198,25 @@ struct LongStr {
 
     ~LongStr() noexcept {
         if (ssp_ != nullptr && --(ssp_->ref_count) == 0) {
-            deallocate_shared_str(ssp_, size_);
+            deallocate_shared_str<CharT, Allocator>(ssp_, size_);
             ssp_ = nullptr;
         }
     }
 };
 
-template <typename Allocator>
+template <typename CharT, typename Allocator>
 struct ShortStr {
     static constexpr std::size_t ALLOCATOR_SIZE =
         std::is_empty_v<Allocator> ? 0 : sizeof(Allocator);
     static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::uint8_t) - 1;
     static constexpr std::uint8_t MAX_SIZE = (1ul << SIZE_BITS) - 1;
     static constexpr std::size_t BUFFER_SIZE =
-        sizeof(LongStr<Allocator>) - 1 - ALLOCATOR_SIZE;
+        sizeof(LongStr<CharT, Allocator>) - 1 - ALLOCATOR_SIZE;
     static_assert(BUFFER_SIZE <= MAX_SIZE);
 
     bool is_long_ : 1;
     std::uint8_t size_ : SIZE_BITS;
-    std::array<char, BUFFER_SIZE> data_;
+    std::array<CharT, BUFFER_SIZE> data_;
     [[no_unique_address]] Allocator allocator_;
 
     ShortStr() = delete;
@@ -228,13 +227,15 @@ struct ShortStr {
     }
 };
 
-template <typename Allocator>
+template <typename CharT, typename Allocator>
 struct UnionStr {
-    static_assert(sizeof(ShortStr<Allocator>) == sizeof(LongStr<Allocator>));
+    static_assert(
+        sizeof(ShortStr<CharT, Allocator>)
+        == sizeof(LongStr<CharT, Allocator>));
 
     union {
-        LongStr<Allocator> long_;
-        ShortStr<Allocator> short_;
+        LongStr<CharT, Allocator> long_;
+        ShortStr<CharT, Allocator> short_;
     };
 
     UnionStr() = delete;
@@ -243,26 +244,26 @@ struct UnionStr {
 
     UnionStr(const UnionStr& other) noexcept {
         if (other.is_long()) {
-            new (&long_) LongStr<Allocator>(other.long_);
+            new (&long_) LongStr<CharT, Allocator>(other.long_);
         } else {
-            new (&short_) ShortStr<Allocator>(other.short_);
+            new (&short_) ShortStr<CharT, Allocator>(other.short_);
         }
     }
 
     UnionStr(UnionStr&& other) noexcept {
         if (other.is_long()) {
-            new (&long_) LongStr<Allocator>(std::move(other.long_));
+            new (&long_) LongStr<CharT, Allocator>(std::move(other.long_));
         } else {
-            new (&short_) ShortStr<Allocator>(other.short_);
+            new (&short_) ShortStr<CharT, Allocator>(other.short_);
         }
     }
 
     UnionStr(const Allocator& alloc, std::size_t size) {
-        if (size >= ShortStr<Allocator>::BUFFER_SIZE) {
-            new (&long_) LongStr<Allocator>(alloc, size);
+        if (size >= ShortStr<CharT, Allocator>::BUFFER_SIZE) {
+            new (&long_) LongStr<CharT, Allocator>(alloc, size);
         } else {
             new (&short_)
-                ShortStr<Allocator>(alloc, static_cast<uint8_t>(size));
+                ShortStr<CharT, Allocator>(alloc, static_cast<uint8_t>(size));
         }
     }
 
@@ -283,11 +284,11 @@ struct UnionStr {
         return is_long() ? long_.size_ : short_.size_;
     }
 
-    [[nodiscard]] char* data() noexcept {
+    [[nodiscard]] CharT* data() noexcept {
         return is_long() ? long_.ssp_->data : short_.data_.data();
     }
 
-    [[nodiscard]] const char* data() const noexcept {
+    [[nodiscard]] const CharT* data() const noexcept {
         return is_long() ? long_.ssp_->data : short_.data_.data();
     }
 
@@ -298,16 +299,18 @@ struct UnionStr {
 
 } // namespace detail
 
-template <typename Allocator = std::allocator<char>>
+template <
+    typename CharT = char, typename Traits = std::char_traits<CharT>,
+    typename Allocator = std::allocator<CharT>>
 class String {
 public:
     // types
-    using value_type = char;
-    using pointer = char*;
-    using const_pointer = const char*;
-    using reference = char&;
-    using const_reference = const char&;
-    using const_iterator = const char*;
+    using value_type = CharT;
+    using pointer = CharT*;
+    using const_pointer = const CharT*;
+    using reference = CharT&;
+    using const_reference = const CharT&;
+    using const_iterator = const CharT*;
     using iterator = const_iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
@@ -319,40 +322,47 @@ public:
         std::is_same_v<value_type, typename allocator_type::value_type>,
         "Invalid Allocator::value_type");
 
-    static_assert(std::is_standard_layout<detail::LongStr<Allocator>>::value);
-    static_assert(std::is_standard_layout<detail::ShortStr<Allocator>>::value);
-    static_assert(std::is_standard_layout<detail::UnionStr<Allocator>>::value);
+    static_assert(
+        std::is_standard_layout<detail::LongStr<CharT, Allocator>>::value
+            && std::is_standard_layout<
+                detail::ShortStr<CharT, Allocator>>::value
+            && std::is_standard_layout<
+                detail::UnionStr<CharT, Allocator>>::value,
+        "You found a bug in libstuff, contact the developpers");
 
+private:
+    using ViewT = std::basic_string_view<CharT, Traits>;
+
+public:
     // Maximum size of a string that still fits the small buffer and
     // thus for which allocation is optimized away
     static constexpr std::size_t SMALL_STRING_SIZE =
-        detail::ShortStr<Allocator>::BUFFER_SIZE - 1;
-    static constexpr std::size_t npos = std::string_view::npos;
+        detail::ShortStr<CharT, Allocator>::BUFFER_SIZE - 1;
+    static constexpr std::size_t npos = ViewT::npos;
 
 public:
     String() noexcept(noexcept(Allocator())) : String(Allocator()) {}
 
     explicit String(const Allocator& alloc) noexcept : str_(alloc) {
-        str_.data()[0] = '\0';
+        Traits::assign(str_.data()[0], CharT()); 
     }
 
-    explicit String(const char* str, const Allocator& alloc = Allocator())
+    explicit String(const CharT* str, const Allocator& alloc = Allocator())
         : str_(alloc, std::strlen(str)) {
         std::memcpy(str_.data(), str, str_.length() + 1);
     }
 
     String(
-        const char* str, std::size_t count,
+        const CharT* str, std::size_t count,
         const Allocator& alloc = Allocator())
         : str_(alloc, count) {
         std::memcpy(str_.data(), str, count);
-        str_.data()[count] = '\0';
+        Traits::assign(str_.data()[count], CharT()); 
     }
 
     // Do not "select" allocator to see if it propagates on copy.
-    // Since we do not duplicate the allocated container area (the
-    // char[] inside the shared_ptr) but share it, it seems logical
-    // to always propagate the allocator.
+    // Since we do not duplicate the allocated container area
+    // but share it, it seems logical to always propagate the allocator.
     String(const String& other) noexcept : str_(other.str_) {}
 
     // Note: we could avoid copy if (alloc == other.allocator_)
@@ -407,14 +417,15 @@ public:
     [[nodiscard]] std::size_t length() const noexcept { return str_.length(); }
     [[nodiscard]] std::size_t size() const noexcept { return length(); }
     [[nodiscard]] bool empty() const noexcept { return length() == 0; }
+    [[nodiscard]] bool is_empty() const noexcept { return length() == 0; }
 
     // Access
 
-    [[nodiscard]] const char& operator[](std::size_t pos) const {
+    [[nodiscard]] const CharT& operator[](std::size_t pos) const {
         return data()[pos];
     }
 
-    [[nodiscard]] const char& at(std::size_t pos) const {
+    [[nodiscard]] const CharT& at(std::size_t pos) const {
         check_bounds(pos);
         return data()[pos];
     }
@@ -424,70 +435,59 @@ public:
         return data()[length() - 1];
     }
 
-    [[nodiscard]] const char* c_str() const { return data(); }
-    [[nodiscard]] const char* data() const { return str_.data(); }
+    [[nodiscard]] const CharT* c_str() const { return data(); }
+    [[nodiscard]] const CharT* data() const { return str_.data(); }
 
     // Comparisson
 
     [[nodiscard]] int compare(const String& other) const noexcept {
-        return compare(static_cast<std::string_view>(other));
+        return compare(static_cast<ViewT>(other));
     }
 
-    [[nodiscard]] int compare(const std::string_view str) const noexcept {
-        return static_cast<std::string_view>(this).compare(str);
+    [[nodiscard]] int compare(const ViewT str) const noexcept {
+        return static_cast<ViewT>(this).compare(str);
     }
-
-    //    auto operator <=>(const String& other) const {
-    //        return <=>(static_cast<std::string_view>(other));
-    //    }
-    //
-    //    auto operator <=>(const std::string_view str) const {
-    //        auto comp = this.compare(str):
-    //        if (comp < 0 ) { return std::strong_ordering::less }
-    //        else if (comp == 0) { return std::strong_oredering::equal }
-    //        else { return std::strong_ordering::greater }
-    //    }
 
     // Implicit conversion
-    operator std::string_view() const noexcept {
-        return std::string_view(data(), size());
+    operator std::basic_string_view<CharT, Traits>() const noexcept {
+        return ViewT(data(), size());
     }
 
     // Operations
 
-    [[nodiscard]] bool starts_with(const std::string_view sv) const noexcept {
-        return static_cast<std::string_view>(*this).starts_with(sv);
+    [[nodiscard]] bool starts_with(const ViewT sv) const noexcept {
+        return static_cast<ViewT>(*this).starts_with(sv);
     }
-    [[nodiscard]] bool starts_with(char c) const noexcept {
-        return static_cast<std::string_view>(*this).starts_with(c);
+    [[nodiscard]] bool starts_with(CharT c) const noexcept {
+        return static_cast<ViewT>(*this).starts_with(c);
     }
-    [[nodiscard]] bool starts_with(const char* s) const {
-        return starts_with(std::string_view(s));
-    }
-
-    [[nodiscard]] bool ends_with(const std::string_view sv) const noexcept {
-        return static_cast<std::string_view>(*this).ends_with(sv);
-    }
-    [[nodiscard]] bool ends_with(char c) const noexcept {
-        return static_cast<std::string_view>(*this).ends_with(c);
-    }
-    [[nodiscard]] bool ends_with(const char* s) const {
-        return ends_with(std::string_view(s));
+    [[nodiscard]] bool starts_with(const CharT* s) const {
+        return starts_with(ViewT(s));
     }
 
-    [[nodiscard]] bool contains(const std::string_view sv) const noexcept {
-        return static_cast<std::string_view>(*this).find(sv) != npos;
+    [[nodiscard]] bool ends_with(const ViewT sv) const noexcept {
+        return static_cast<ViewT>(*this).ends_with(sv);
     }
-    [[nodiscard]] bool contains(char c) const noexcept {
-        return static_cast<std::string_view>(*this).find(c) != npos;
+    [[nodiscard]] bool ends_with(CharT c) const noexcept {
+        return static_cast<ViewT>(*this).ends_with(c);
     }
-    [[nodiscard]] bool contains(const char* s) const {
-        return contains(std::string_view(s));
+    [[nodiscard]] bool ends_with(const CharT* s) const {
+        return ends_with(ViewT(s));
     }
 
-    [[nodiscard]] std::string_view
+    [[nodiscard]] bool contains(const ViewT sv) const noexcept {
+        return static_cast<ViewT>(*this).find(sv) != npos;
+    }
+    [[nodiscard]] bool contains(CharT c) const noexcept {
+        return static_cast<ViewT>(*this).find(c) != npos;
+    }
+    [[nodiscard]] bool contains(const CharT* s) const {
+        return contains(ViewT(s));
+    }
+
+    [[nodiscard]] ViewT
     substr_view(std::size_t pos = 0, std::size_t count = npos) const noexcept {
-        return static_cast<std::string_view>(*this).substr(pos, count);
+        return static_cast<ViewT>(*this).substr(pos, count);
     }
 
     // NOTE: We do like std::string and use a default constructed allocator
@@ -504,9 +504,9 @@ public:
         return String(sv.data(), sv.length(), alloc);
     }
 
-    [[nodiscard]] std::size_t
-    find(std::string_view sv, std::size_t pos = 0) const noexcept {
-        return static_cast<std::string_view>(*this).find(sv, pos);
+    [[nodiscard]] std::size_t find(ViewT sv, std::size_t pos = 0) const
+        noexcept {
+        return static_cast<ViewT>(*this).find(sv, pos);
     }
 
     // TODO more find() rfind() ...
@@ -517,13 +517,13 @@ public:
 
     // NOTE: Default constructed alloc, NOT a copy of this->allocator_
     [[nodiscard]] String replace(
-        std::string_view old, std::string_view n,
+        ViewT old, ViewT n,
         std::size_t count = std::numeric_limits<std::size_t>::max()) const {
         return replace(Allocator(), old, n, count);
     }
 
     [[nodiscard]] String replace(
-        const Allocator alloc, std::string_view old, std::string_view n,
+        const Allocator alloc, ViewT old, ViewT n,
         std::size_t count = std::numeric_limits<std::size_t>::max()) const {
         std::size_t pos = 0;
         std::size_t c = 0;
@@ -541,7 +541,7 @@ public:
             - static_cast<std::ptrdiff_t>(c) * diff;
 
         String out(static_cast<std::size_t>(len), alloc);
-        char* it_out = out.str_.data();
+        CharT* it_out = out.str_.data();
         c = 0;
         pos = 0;
         while (c < count) {
@@ -560,7 +560,7 @@ public:
         std::size_t l = length() - pos;
         std::memcpy(it_out, &data()[pos], l);
         it_out += l;
-        it_out[0] = '\0';
+        Traits::assign(it_out[0], CharT());
         return out;
     }
 
@@ -568,24 +568,24 @@ public:
 
     // NOTE: Default constructed alloc, NOT a copy of this->allocator_
     template <typename... Args>
-    // requires (... && std::is_convertible_v<Args, std::string_view>)
+    // requires (... && std::is_convertible_v<Args, ViewT>)
     [[nodiscard]] String join(const Args&... args) const {
         return join(Allocator(), args...);
     }
 
     template <typename... Args>
-    // requires (... && std::is_convertible_v<Args, std::string_view>)
+    // requires (... && std::is_convertible_v<Args, ViewT>)
     [[nodiscard]] String
     join(const Allocator& alloc, const Args&... args) const {
         constexpr size_t n_args = sizeof...(Args);
-        std::array<std::string_view, n_args> args_array{{args...}};
+        std::array<ViewT, n_args> args_array{{args...}};
         return join(alloc, args_array.cbegin(), args_array.cend());
     }
 
 private:
     // TODO make const if possible
     // join()/replace() make this difficult to do
-    detail::UnionStr<Allocator> str_;
+    detail::UnionStr<CharT, Allocator> str_;
 
     // Alocate if necessary and set size but requires data to be filled later
     explicit String(
@@ -615,7 +615,7 @@ private:
     template <typename Iter>
     // requires std::is_same_v<
     //     std::iterator_traits<Iter>::value_type,
-    //     std::string_view>
+    //     ViewT>
     [[nodiscard]] String
     join(const Allocator& alloc, Iter first, Iter last) const {
         std::size_t len = 0;
@@ -628,7 +628,7 @@ private:
 
         String ret(len, alloc);
         auto it = first;
-        char* dest = ret.str_.data();
+        CharT* dest = ret.str_.data();
         std::memcpy(dest, it->data(), it->length());
         dest += it->length();
         it++;
@@ -638,8 +638,7 @@ private:
             std::memcpy(dest, it->data(), it->length());
             dest += it->length();
         }
-        dest[0] = '\0';
-        // Do not use std::move, let the compiler do named RVO .
+        Traits::assign(dest[0], CharT());
         return ret;
     }
 };
@@ -647,111 +646,184 @@ private:
 // Non-member functions
 
 // Comparisson
-template <typename Allocator>
-bool operator==(const String<Allocator>& lhs, const String<Allocator>& rhs) {
-    return static_cast<std::string_view>(lhs)
-        == static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator==(
+    const String<CharT, Traits, Allocator>& lhs,
+    const String<CharT, Traits, Allocator>& rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) == static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator!=(const String<Allocator>& lhs, const String<Allocator>& rhs) {
-    return static_cast<std::string_view>(lhs)
-        != static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator==(
+    const String<CharT, Traits, Allocator>& lhs, 
+    const CharT* rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) == static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator<(const String<Allocator>& lhs, const String<Allocator>& rhs) {
-    return static_cast<std::string_view>(lhs)
-        < static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator==(
+    const CharT* lhs, 
+    const String<CharT, Traits, Allocator>& rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) == static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator<=(const String<Allocator>& lhs, const String<Allocator>& rhs) {
-    return static_cast<std::string_view>(lhs)
-        <= static_cast<std::string_view>(rhs);
+// C++20
+// template <typename CharT, typename Traits, typename Allocator>
+// constexpr auto operator <=> (
+//         const String<CharT, Traits, Allocator>& lhs,
+//         const String<CharT, Traits, Allocator>& rhs) {
+//     return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
+//         <=> std::basic_string_view<CharT, Traits>(rhs);
+// }
+//
+// template <typename CharT, typename Traits, typename Allocator>
+// constexpr auto operator <=> (
+//         const String<CharT, Traits, Allocator>& lhs,
+//         const CharT* rhs ) {
+//     using ViewT = std::basic_string_view<CharT, Traits>;
+//     auto comp = lhs.compare(ViewT(rhs));
+//     if (comp < 0 ) { return std::strong_ordering::less; }
+//     else if (comp == 0) { return std::strong_oredering::equal; }
+//     else { return std::strong_ordering::greater; }
+// }
+
+// Pre C+20
+template <typename CharT, typename Traits, typename Allocator>
+bool operator!=(
+    const String<CharT, Traits, Allocator>& lhs,
+    const String<CharT, Traits, Allocator>& rhs) {
+    return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
+        != static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename Allocator>
-bool operator>(const String<Allocator>& lhs, const String<Allocator>& rhs) {
-    return static_cast<std::string_view>(lhs)
-        > static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+bool operator<(
+    const String<CharT, Traits, Allocator>& lhs,
+    const String<CharT, Traits, Allocator>& rhs) {
+    return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
+        < static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename Allocator>
-bool operator>=(const String<Allocator>& lhs, const String<Allocator>& rhs) {
-    return static_cast<std::string_view>(lhs)
-        >= static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+bool operator<=(
+    const String<CharT, Traits, Allocator>& lhs,
+    const String<CharT, Traits, Allocator>& rhs) {
+    return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
+        <= static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename Allocator>
-bool operator==(const String<Allocator>& lhs, const std::string_view& rhs) {
-    return static_cast<std::string_view>(lhs) == rhs;
+template <typename CharT, typename Traits, typename Allocator>
+bool operator>(
+    const String<CharT, Traits, Allocator>& lhs,
+    const String<CharT, Traits, Allocator>& rhs) {
+    return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
+        > static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename Allocator>
-bool operator!=(const String<Allocator>& lhs, const std::string_view& rhs) {
-    return static_cast<std::string_view>(lhs) != rhs;
+template <typename CharT, typename Traits, typename Allocator>
+bool operator>=(
+    const String<CharT, Traits, Allocator>& lhs,
+    const String<CharT, Traits, Allocator>& rhs) {
+    return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
+        >= static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename Allocator>
-bool operator<(const String<Allocator>& lhs, const std::string_view& rhs) {
-    return static_cast<std::string_view>(lhs) < rhs;
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator!=(
+    const String<CharT, Traits, Allocator>& lhs, 
+    const CharT* rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) != static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator<=(const String<Allocator>& lhs, const std::string_view& rhs) {
-    return static_cast<std::string_view>(lhs) <= rhs;
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator!=(
+    const CharT* lhs, 
+    const String<CharT, Traits, Allocator>& rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) != static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator>(const String<Allocator>& lhs, const std::string_view& rhs) {
-    return static_cast<std::string_view>(lhs) > rhs;
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator<(
+    const String<CharT, Traits, Allocator>& lhs, 
+    const CharT* rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) < static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator>=(const String<Allocator>& lhs, const std::string_view& rhs) {
-    return static_cast<std::string_view>(lhs) >= rhs;
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator<(
+    const CharT* lhs, 
+    const String<CharT, Traits, Allocator>& rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) < static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator==(const std::string_view& lhs, const String<Allocator>& rhs) {
-    return lhs == static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator<=(
+    const String<CharT, Traits, Allocator>& lhs, 
+    const CharT* rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) <= static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator!=(const std::string_view& lhs, const String<Allocator>& rhs) {
-    return lhs != static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator<=(
+    const CharT* lhs, 
+    const String<CharT, Traits, Allocator>& rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) <= static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator<(const std::string_view& lhs, const String<Allocator>& rhs) {
-    return lhs < static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator>(
+    const String<CharT, Traits, Allocator>& lhs, 
+    const CharT* rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) > static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator<=(const std::string_view& lhs, const String<Allocator>& rhs) {
-    return lhs <= static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator>(
+    const CharT* lhs, 
+    const String<CharT, Traits, Allocator>& rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) > static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator>(const std::string_view& lhs, const String<Allocator>& rhs) {
-    return lhs > static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator>=(
+    const String<CharT, Traits, Allocator>& lhs, 
+    const CharT* rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) >= static_cast<ViewT>(rhs);
 }
 
-template <typename Allocator>
-bool operator>=(const std::string_view& lhs, const String<Allocator>& rhs) {
-    return lhs >= static_cast<std::string_view>(rhs);
+template <typename CharT, typename Traits, typename Allocator>
+constexpr bool operator>=(
+    const CharT* lhs, 
+    const String<CharT, Traits, Allocator>& rhs) {
+    using ViewT = std::basic_string_view<CharT, Traits>;
+    return static_cast<ViewT>(lhs) >= static_cast<ViewT>(rhs);
 }
+// End of pre-C++20 comparisson stuff
 
 // iostream support
-template <typename Allocator>
-std::ostream& operator<<(std::ostream& os, const String<Allocator>& s) {
-    os << static_cast<std::string_view>(s);
+template <typename CharT, typename Traits, typename Allocator>
+std::ostream&
+operator<<(std::ostream& os, const String<CharT, Traits, Allocator>& s) {
+    os << static_cast<std::basic_string_view<CharT, Traits>>(s);
     return os;
 }
 
 namespace pmr {
-using String = ::stuff::String<std::pmr::polymorphic_allocator<char>>;
+template <typename CharT = char, typename Traits = std::char_traits<CharT>>
+using String =
+    ::stuff::String<CharT, Traits, std::pmr::polymorphic_allocator<CharT>>;
 } // namespace pmr
 
 } // namespace stuff
