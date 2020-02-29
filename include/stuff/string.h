@@ -15,11 +15,10 @@
 
 // TODO:
 // - make template parameter for short string cut-off value
-// - use char trait
+// - make sure API is complete and on par with std::string
 // - C++11 compatibility
 // - micro-benchmarks
 // - use-case benchmarks
-// - help gdb know about the strings (see reddit thread)
 
 #pragma once
 
@@ -204,14 +203,16 @@ struct LongStr {
     }
 };
 
-template <typename CharT, typename Allocator>
+template <typename CharT, std::uint8_t N, typename Allocator>
 struct ShortStr {
     static constexpr std::size_t ALLOCATOR_SIZE =
         std::is_empty_v<Allocator> ? 0 : sizeof(Allocator);
     static constexpr std::size_t SIZE_BITS = 8 * sizeof(std::uint8_t) - 1;
     static constexpr std::uint8_t MAX_SIZE = (1ul << SIZE_BITS) - 1;
-    static constexpr std::size_t BUFFER_SIZE =
+    static constexpr std::size_t MIN_BUFFER_SIZE =
         sizeof(LongStr<CharT, Allocator>) - 1 - ALLOCATOR_SIZE;
+    static constexpr std::size_t BUFFER_SIZE = 
+        N == 0 ? MIN_BUFFER_SIZE : N;
     static_assert(BUFFER_SIZE <= MAX_SIZE);
 
     bool is_long_ : 1;
@@ -227,15 +228,17 @@ struct ShortStr {
     }
 };
 
-template <typename CharT, typename Allocator>
+template <typename CharT, std::uint8_t N, typename Allocator>
 struct UnionStr {
+    using TShort = ShortStr<CharT, N, Allocator>; 
+    using TLong = LongStr<CharT, Allocator>;
     static_assert(
-        sizeof(ShortStr<CharT, Allocator>)
-        == sizeof(LongStr<CharT, Allocator>));
+        N != static_cast<std::uint8_t>(0) 
+        || sizeof(TShort) == sizeof(TLong));
 
     union {
-        LongStr<CharT, Allocator> long_;
-        ShortStr<CharT, Allocator> short_;
+        TLong long_;
+        TShort short_;
     };
 
     UnionStr() = delete;
@@ -244,26 +247,25 @@ struct UnionStr {
 
     UnionStr(const UnionStr& other) noexcept {
         if (other.is_long()) {
-            new (&long_) LongStr<CharT, Allocator>(other.long_);
+            new (&long_) TLong(other.long_);
         } else {
-            new (&short_) ShortStr<CharT, Allocator>(other.short_);
+            new (&short_) TShort(other.short_);
         }
     }
 
     UnionStr(UnionStr&& other) noexcept {
         if (other.is_long()) {
-            new (&long_) LongStr<CharT, Allocator>(std::move(other.long_));
+            new (&long_) TLong(std::move(other.long_));
         } else {
-            new (&short_) ShortStr<CharT, Allocator>(other.short_);
+            new (&short_) TShort(other.short_);
         }
     }
 
     UnionStr(const Allocator& alloc, std::size_t size) {
-        if (size >= ShortStr<CharT, Allocator>::BUFFER_SIZE) {
-            new (&long_) LongStr<CharT, Allocator>(alloc, size);
+        if (size >= TShort::BUFFER_SIZE) {
+            new (&long_) TLong(alloc, size);
         } else {
-            new (&short_)
-                ShortStr<CharT, Allocator>(alloc, static_cast<uint8_t>(size));
+            new (&short_) TShort(alloc, static_cast<uint8_t>(size));
         }
     }
 
@@ -300,7 +302,9 @@ struct UnionStr {
 } // namespace detail
 
 template <
-    typename CharT = char, typename Traits = std::char_traits<CharT>,
+    typename CharT = char, 
+    typename Traits = std::char_traits<CharT>,
+    std::uint8_t N = 0, 
     typename Allocator = std::allocator<CharT>>
 class String {
 public:
@@ -325,9 +329,9 @@ public:
     static_assert(
         std::is_standard_layout<detail::LongStr<CharT, Allocator>>::value
             && std::is_standard_layout<
-                detail::ShortStr<CharT, Allocator>>::value
+                detail::ShortStr<CharT, N, Allocator>>::value
             && std::is_standard_layout<
-                detail::UnionStr<CharT, Allocator>>::value,
+                detail::UnionStr<CharT, N, Allocator>>::value,
         "You found a bug in libstuff, contact the developpers");
 
 private:
@@ -337,7 +341,7 @@ public:
     // Maximum size of a string that still fits the small buffer and
     // thus for which allocation is optimized away
     static constexpr std::size_t SMALL_STRING_SIZE =
-        detail::ShortStr<CharT, Allocator>::BUFFER_SIZE - 1;
+        detail::ShortStr<CharT, N, Allocator>::BUFFER_SIZE - 1;
     static constexpr std::size_t npos = ViewT::npos;
 
 public:
@@ -585,7 +589,7 @@ public:
 private:
     // TODO make const if possible
     // join()/replace() make this difficult to do
-    detail::UnionStr<CharT, Allocator> str_;
+    detail::UnionStr<CharT, N, Allocator> str_;
 
     // Alocate if necessary and set size but requires data to be filled later
     explicit String(
@@ -646,42 +650,42 @@ private:
 // Non-member functions
 
 // Comparisson
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator==(
-    const String<CharT, Traits, Allocator>& lhs,
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& lhs,
+    const String<CharT, Traits, N, Allocator>& rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) == static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator==(
-    const String<CharT, Traits, Allocator>& lhs, 
+    const String<CharT, Traits, N, Allocator>& lhs, 
     const CharT* rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) == static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator==(
     const CharT* lhs, 
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) == static_cast<ViewT>(rhs);
 }
 
 // C++20
-// template <typename CharT, typename Traits, typename Allocator>
+// template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 // constexpr auto operator <=> (
-//         const String<CharT, Traits, Allocator>& lhs,
-//         const String<CharT, Traits, Allocator>& rhs) {
+//         const String<CharT, Traits, N, Allocator>& lhs,
+//         const String<CharT, Traits, N, Allocator>& rhs) {
 //     return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
 //         <=> std::basic_string_view<CharT, Traits>(rhs);
 // }
 //
-// template <typename CharT, typename Traits, typename Allocator>
+// template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 // constexpr auto operator <=> (
-//         const String<CharT, Traits, Allocator>& lhs,
+//         const String<CharT, Traits, N, Allocator>& lhs,
 //         const CharT* rhs ) {
 //     using ViewT = std::basic_string_view<CharT, Traits>;
 //     auto comp = lhs.compare(ViewT(rhs));
@@ -691,139 +695,142 @@ constexpr bool operator==(
 // }
 
 // Pre C+20
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 bool operator!=(
-    const String<CharT, Traits, Allocator>& lhs,
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& lhs,
+    const String<CharT, Traits, N, Allocator>& rhs) {
     return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
         != static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 bool operator<(
-    const String<CharT, Traits, Allocator>& lhs,
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& lhs,
+    const String<CharT, Traits, N, Allocator>& rhs) {
     return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
         < static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 bool operator<=(
-    const String<CharT, Traits, Allocator>& lhs,
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& lhs,
+    const String<CharT, Traits, N, Allocator>& rhs) {
     return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
         <= static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 bool operator>(
-    const String<CharT, Traits, Allocator>& lhs,
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& lhs,
+    const String<CharT, Traits, N, Allocator>& rhs) {
     return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
         > static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 bool operator>=(
-    const String<CharT, Traits, Allocator>& lhs,
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& lhs,
+    const String<CharT, Traits, N, Allocator>& rhs) {
     return static_cast<std::basic_string_view<CharT, Traits>>(lhs)
         >= static_cast<std::basic_string_view<CharT, Traits>>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator!=(
-    const String<CharT, Traits, Allocator>& lhs, 
+    const String<CharT, Traits, N, Allocator>& lhs, 
     const CharT* rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) != static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator!=(
     const CharT* lhs, 
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) != static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator<(
-    const String<CharT, Traits, Allocator>& lhs, 
+    const String<CharT, Traits, N, Allocator>& lhs, 
     const CharT* rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) < static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator<(
     const CharT* lhs, 
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) < static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator<=(
-    const String<CharT, Traits, Allocator>& lhs, 
+    const String<CharT, Traits, N, Allocator>& lhs, 
     const CharT* rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) <= static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator<=(
     const CharT* lhs, 
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) <= static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator>(
-    const String<CharT, Traits, Allocator>& lhs, 
+    const String<CharT, Traits, N, Allocator>& lhs, 
     const CharT* rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) > static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator>(
     const CharT* lhs, 
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) > static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator>=(
-    const String<CharT, Traits, Allocator>& lhs, 
+    const String<CharT, Traits, N, Allocator>& lhs, 
     const CharT* rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) >= static_cast<ViewT>(rhs);
 }
 
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 constexpr bool operator>=(
     const CharT* lhs, 
-    const String<CharT, Traits, Allocator>& rhs) {
+    const String<CharT, Traits, N, Allocator>& rhs) {
     using ViewT = std::basic_string_view<CharT, Traits>;
     return static_cast<ViewT>(lhs) >= static_cast<ViewT>(rhs);
 }
 // End of pre-C++20 comparisson stuff
 
 // iostream support
-template <typename CharT, typename Traits, typename Allocator>
+template <typename CharT, typename Traits, uint8_t N, typename Allocator>
 std::ostream&
-operator<<(std::ostream& os, const String<CharT, Traits, Allocator>& s) {
+operator<<(std::ostream& os, const String<CharT, Traits, N, Allocator>& s) {
     os << static_cast<std::basic_string_view<CharT, Traits>>(s);
     return os;
 }
 
 namespace pmr {
-template <typename CharT = char, typename Traits = std::char_traits<CharT>>
+template <
+    typename CharT = char,
+    typename Traits = std::char_traits<CharT>, 
+    uint8_t N = 0>
 using String =
-    ::stuff::String<CharT, Traits, std::pmr::polymorphic_allocator<CharT>>;
+    ::stuff::String<CharT, Traits, N, std::pmr::polymorphic_allocator<CharT>>;
 } // namespace pmr
 
 } // namespace stuff
