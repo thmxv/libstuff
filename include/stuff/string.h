@@ -14,7 +14,6 @@
 // - Allocator support
 
 // TODO:
-// - make template parameter for short string cut-off value
 // - make sure API is complete and on par with std::string
 // - C++11 compatibility
 // - micro-benchmarks
@@ -213,7 +212,11 @@ struct ShortStr {
         sizeof(LongStr<CharT, Allocator>) - 1 - ALLOCATOR_SIZE;
     static constexpr std::size_t BUFFER_SIZE = 
         N == 0 ? MIN_BUFFER_SIZE : N;
-    static_assert(BUFFER_SIZE <= MAX_SIZE);
+    
+    static_assert(N <= MAX_SIZE,
+        "SBO buffer size too big");
+    static_assert(BUFFER_SIZE <= MAX_SIZE,
+        "You found a bug in libstuff, contact the developpers");
 
     bool is_long_ : 1;
     std::uint8_t size_ : SIZE_BITS;
@@ -232,9 +235,11 @@ template <typename CharT, std::uint8_t N, typename Allocator>
 struct UnionStr {
     using TShort = ShortStr<CharT, N, Allocator>; 
     using TLong = LongStr<CharT, Allocator>;
+
     static_assert(
         N != static_cast<std::uint8_t>(0) 
-        || sizeof(TShort) == sizeof(TLong));
+        || sizeof(TShort) == sizeof(TLong),
+        "You found a bug in libstuff, contact the developpers");
 
     union {
         TLong long_;
